@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "buaa-td"
+version = "1.2.0"
+description = "A bilingual Windows console for managing scheduled BUAA TD check-ins."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Huiteng Zhuang" },
+]
+keywords = ["buaa", "td", "automation", "windows", "tkinter"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Win32 (MS Windows)",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Desktop Environment",
+]
+dependencies = []
+
+[project.optional-dependencies]
+images = ["Pillow>=10"]
+dev = ["Pillow>=10"]
+
+[project.scripts]
+buaatd = "buaatd.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["buaatd*"]

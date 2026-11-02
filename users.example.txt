@@ -1,0 +1,5 @@
+# student_id name campus
+# campus: Xueyuanlu / Shahe (Chinese campus names are also accepted)
+
+22371001 Alice Xueyuanlu
+22371002 Bob Shahe
