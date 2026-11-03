@@ -67,6 +67,7 @@ def run_scheduler_once(
     results = []
     for index, user in enumerate(users, start=1):
         user_state = user_states[user.student_id]
+        user_state.pop("completed_windows", None)
         status = str(user_state.get("status", "pending"))
         if status == "completed":
             results.append(UserResult(index, user.student_id, True, "已完成"))
@@ -75,12 +76,12 @@ def run_scheduler_once(
             message = str(user_state.get("last_error") or "未知错误")
             results.append(UserResult(index, user.student_id, False, message))
             continue
-        completed_windows = [
-            str(value) for value in user_state.get("completed_windows", [])
-        ]
         if status == "window_done":
-            if str(user_state.get("window_key") or "") == window_key:
-                results.append(UserResult(index, user.student_id, True, "本时段已完成"))
+            if int(user_state.get("completed_rounds", 0)) >= user.rounds:
+                user_state.update(
+                    _completed_user_state(user, now, "今日轮次已完成")
+                )
+                results.append(UserResult(index, user.student_id, True, "已完成"))
                 continue
             status = "pending"
             user_state.update(
@@ -89,34 +90,27 @@ def run_scheduler_once(
                     "next_action": "entrance",
                     "due_at": None,
                     "window_key": window_key,
-                    "last_message": "新的时间窗开始",
+                    "last_message": "继续完成今日剩余轮次",
                     "last_error": None,
                     "updated_at": _iso(now),
                 }
             )
         elif status == "waiting" and str(user_state.get("window_key") or "") != window_key:
-            _discard_current_round(user_state, user, now, "跨时段")
+            if user_state.get("next_action") == "exit":
+                _discard_current_round(user_state, user, now, "跨时段")
+                last_message = "上一轮已跨时段，本时段重新开始"
+            else:
+                last_message = "继续完成今日剩余轮次"
             user_state.update(
                 {
+                    "status": "pending",
+                    "next_action": "entrance",
+                    "due_at": None,
                     "window_key": window_key,
-                    "last_message": "上一轮已跨时段，本时段重新开始",
+                    "last_message": last_message,
                 }
             )
             status = "pending"
-        if window_key in completed_windows:
-            user_state.update(
-                {
-                    "status": "window_done",
-                    "window_key": window_key,
-                    "next_action": None,
-                    "due_at": None,
-                    "last_message": "本时段已完成",
-                    "last_error": None,
-                    "updated_at": _iso(now),
-                }
-            )
-            results.append(UserResult(index, user.student_id, True, "本时段已完成"))
-            continue
         if _reached_limit(store, user):
             message = f"TD 已达 {TD_LIMIT}"
             user_state.update(_completed_user_state(user, now, message))
@@ -132,6 +126,21 @@ def run_scheduler_once(
                     {
                         "window_key": window_key,
                         "last_message": "出口时间超出本时段，下个时段重试",
+                    }
+                )
+                results.append(
+                    UserResult(index, user.student_id, True, user_state["last_message"])
+                )
+                continue
+            if action == "entrance" and due_at >= window_deadline:
+                user_state.update(
+                    {
+                        "status": "pending",
+                        "next_action": "entrance",
+                        "due_at": None,
+                        "window_key": None,
+                        "last_message": "等待时间超出本时段，下个时段继续",
+                        "updated_at": _iso(now),
                     }
                 )
                 results.append(
@@ -303,6 +312,7 @@ def _perform_due_action(
             user,
             user_state,
             now,
+            wait_seconds,
             logger,
             round_no,
             window_key,
@@ -370,6 +380,7 @@ def _perform_exit(
     user,
     user_state,
     now,
+    wait_seconds,
     logger,
     round_no,
     window_key,
@@ -390,20 +401,17 @@ def _perform_exit(
         message = f"今日已完成 {completed_rounds}/{user.rounds}"
         user_state.update(_completed_user_state(user, now, message, completed_rounds=completed_rounds))
         return True, message
-    completed_windows = list(user_state.get("completed_windows", []))
-    if window_key not in completed_windows:
-        completed_windows.append(window_key)
+    wait_s = max(0, int(wait_seconds(user)))
     user_state.update(
         {
-            "status": "window_done",
+            "status": "waiting",
             "completed_rounds": completed_rounds,
-            "completed_windows": completed_windows,
-            "next_action": None,
-            "due_at": None,
+            "next_action": "entrance",
+            "due_at": _iso(now + timedelta(seconds=wait_s)),
             "window_key": window_key,
             "retry_count": 0,
             "last_message": (
-                f"本时段已完成，今日进度 {completed_rounds}/{user.rounds}"
+                f"出口完成，{wait_s}s 后下一轮（{completed_rounds}/{user.rounds}）"
             ),
             "last_error": None,
             "updated_at": _iso(now),
@@ -475,7 +483,6 @@ def _new_user_state(now):
     return {
         "status": "pending",
         "completed_rounds": 0,
-        "completed_windows": [],
         "next_action": "entrance",
         "due_at": None,
         "window_key": None,

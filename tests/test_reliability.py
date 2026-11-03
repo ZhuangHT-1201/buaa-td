@@ -172,24 +172,27 @@ class SchedulerFlowTests(unittest.TestCase):
         state = self.store.load_state()
         user_state = state["daily_runs"]["2026-11-03"]["users"][self.user.student_id]
         self.assertEqual(user_state["completed_rounds"], 1)
-        self.assertEqual([machine for machine, _ in client.checks], [
-            self.user.entrance_machine_id,
-            self.user.exit_machine_id,
-        ])
+        self.assertEqual(user_state["next_action"], "entrance")
+        self.assertEqual(
+            [machine for machine, _ in client.checks],
+            [self.user.entrance_machine_id, self.user.exit_machine_id],
+        )
         self.assertEqual(len(client.uploads), 2)
         self.assertTrue(all(data.startswith(b"\xff\xd8\xff") for _, data in client.uploads))
 
-        run_scheduler_once(
-            self.store,
-            now=datetime(2026, 11, 3, 8, 5, tzinfo=BEIJING_TZ),
-            logger=None,
-            client=client,
-            wait_seconds=lambda _user: 0,
-        )
-        self.assertEqual(len(client.checks), 2)
+        for second in range(2, 6):
+            run_scheduler_once(
+                self.store,
+                now=datetime(2026, 11, 3, 8, 0, second, tzinfo=BEIJING_TZ),
+                logger=None,
+                client=client,
+                wait_seconds=lambda _user: 0,
+            )
         state = self.store.load_state()
         user_state = state["daily_runs"]["2026-11-03"]["users"][self.user.student_id]
-        self.assertEqual(user_state["status"], "window_done")
+        self.assertEqual(user_state["status"], "completed")
+        self.assertEqual(user_state["completed_rounds"], 3)
+        self.assertEqual(len(client.checks), 6)
 
         run_scheduler_once(
             self.store,
@@ -198,13 +201,13 @@ class SchedulerFlowTests(unittest.TestCase):
             client=client,
             wait_seconds=lambda _user: 0,
         )
-        self.assertEqual(len(client.checks), 3)
+        self.assertEqual(len(client.checks), 6)
         state = self.store.load_state()
         user_state = state["daily_runs"]["2026-11-03"]["users"][self.user.student_id]
-        self.assertEqual(user_state["next_action"], "exit")
-        self.assertEqual(user_state["completed_rounds"], 1)
+        self.assertEqual(user_state["status"], "completed")
+        self.assertEqual(user_state["completed_rounds"], 3)
 
-    def test_real_socket_protocol_completes_one_td_cycle(self):
+    def test_real_socket_protocol_completes_three_rounds(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.bind(("127.0.0.1", 0))
         listener.listen(8)
@@ -231,7 +234,7 @@ class SchedulerFlowTests(unittest.TestCase):
 
         def serve():
             try:
-                while len(request_types) < 4:
+                while len(request_types) < 12:
                     try:
                         connection, _ = listener.accept()
                     except socket.timeout:
@@ -260,26 +263,31 @@ class SchedulerFlowTests(unittest.TestCase):
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
         start = datetime(2026, 11, 3, 11, 30, tzinfo=BEIJING_TZ)
-        run_scheduler_once(
-            self.store,
-            now=start,
-            wait_seconds=lambda _user: 0,
-        )
-        run_scheduler_once(
-            self.store,
-            now=datetime(2026, 11, 3, 11, 30, 1, tzinfo=BEIJING_TZ),
-            wait_seconds=lambda _user: 0,
-        )
+        for second in range(6):
+            run_scheduler_once(
+                self.store,
+                now=datetime(
+                    2026,
+                    11,
+                    3,
+                    11,
+                    30,
+                    second,
+                    tzinfo=BEIJING_TZ,
+                ),
+                wait_seconds=lambda _user: 0,
+            )
         thread.join(timeout=3)
 
         self.assertFalse(errors)
-        self.assertEqual(request_types, [80, 100, 80, 100])
-        self.assertEqual(len(upload_bodies), 2)
+        self.assertEqual(request_types, [80, 100] * 6)
+        self.assertEqual(len(upload_bodies), 6)
         self.assertTrue(all(b"\xff\xd8\xff" in body for body in upload_bodies))
         user_state = self.store.load_state()["daily_runs"]["2026-11-03"]["users"][
             self.user.student_id
         ]
-        self.assertEqual(user_state["completed_rounds"], 1)
+        self.assertEqual(user_state["completed_rounds"], 3)
+        self.assertEqual(user_state["status"], "completed")
 
     def test_transient_network_error_retries_in_same_window(self):
         class TransientClient(FakeClient):
@@ -323,6 +331,43 @@ class SchedulerFlowTests(unittest.TestCase):
         self.assertEqual(user_state["status"], "waiting")
         self.assertEqual(user_state["next_action"], "exit")
         self.assertEqual(user_state["retry_count"], 0)
+
+    def test_rounds_are_spaced_then_continue_in_same_window(self):
+        client = FakeClient()
+        run_scheduler_once(
+            self.store,
+            now=datetime(2026, 11, 3, 7, 30, tzinfo=BEIJING_TZ),
+            wait_seconds=lambda _user: 180,
+            client=client,
+        )
+        state = self.store.load_state()
+        user_state = state["daily_runs"]["2026-11-03"]["users"][self.user.student_id]
+        self.assertEqual(user_state["next_action"], "exit")
+        self.assertTrue(user_state["due_at"].endswith("07:33:00+08:00"))
+
+        run_scheduler_once(
+            self.store,
+            now=datetime(2026, 11, 3, 7, 33, 1, tzinfo=BEIJING_TZ),
+            wait_seconds=lambda _user: 180,
+            client=client,
+        )
+        state = self.store.load_state()
+        user_state = state["daily_runs"]["2026-11-03"]["users"][self.user.student_id]
+        self.assertEqual(user_state["completed_rounds"], 1)
+        self.assertEqual(user_state["next_action"], "entrance")
+        self.assertTrue(user_state["due_at"].endswith("07:36:01+08:00"))
+
+        run_scheduler_once(
+            self.store,
+            now=datetime(2026, 11, 3, 7, 36, 2, tzinfo=BEIJING_TZ),
+            wait_seconds=lambda _user: 180,
+            client=client,
+        )
+        state = self.store.load_state()
+        user_state = state["daily_runs"]["2026-11-03"]["users"][self.user.student_id]
+        self.assertEqual(user_state["completed_rounds"], 1)
+        self.assertEqual(user_state["next_action"], "exit")
+        self.assertEqual(len(client.checks), 3)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ A Windows desktop console for managing BUAA TD check-in schedules from one place
 - Optional check-in photos with a valid built-in JPEG fallback.
 - Add, edit, import, and remove roster members from the UI.
 - Independent detached background service with start/stop controls.
-- Strict one-complete-entry/exit-cycle-per-window scheduling.
+- Completes up to three daily rounds with configurable intervals after the first suitable window begins.
 - Automatic retry for transient network failures.
 - Preflight health check for roster, photos, machines, and TD connectivity.
 - No runtime third-party package required for standard JPG workflows.
@@ -82,10 +82,13 @@ The default schedule uses three daily windows in Asia/Shanghai:
 | Midday | `11:30-14:00` |
 | Afternoon | `15:30-20:00` |
 
+The scheduler uses the first suitable window each day, then completes up to three rounds with the configured 3–4 minute intervals. It does not wait for each window to perform one round.
+
 Rules:
 
-- One complete entrance/exit cycle per member per window.
-- Up to three rounds per day.
+- Up to three complete entrance/exit rounds per member per day.
+- All three rounds may be completed in the same eligible time window.
+- If the window ends before all three rounds finish, remaining rounds continue in a later eligible window.
 - A member is skipped automatically after reaching 32 TD records.
 - Transient network errors retry automatically up to five times.
 - New rounds are not started when too little time remains in the current window.
@@ -150,7 +153,7 @@ python -m buaatd stop
 python -m unittest discover -v
 ```
 
-The test suite covers member dialogs, language switching, custom/default photos, asset repair, one-cycle-per-window behavior, transient network retries, and a real local TCP simulation of the entrance/photo/exit protocol.
+The test suite covers member dialogs, language switching, custom/default photos, asset repair, three-round daily scheduling, transient network retries, and a real local TCP simulation of the entrance/photo/exit protocol.
 
 ## Privacy
 
