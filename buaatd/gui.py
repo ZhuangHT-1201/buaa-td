@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import queue
 import socket
@@ -104,6 +105,8 @@ class Dashboard(tk.Tk):
         self._querying_counts = False
         self._checking_health = False
         self._last_log_text = ""
+        self._users_signature: Optional[str] = None
+        self._log_file_signature: Optional[tuple[str, Optional[int], Optional[int]]] = None
         self._last_running: Optional[bool] = None
         self._refresh_after_id: Optional[str] = None
         self._poll_after_id: Optional[str] = None
@@ -151,6 +154,8 @@ class Dashboard(tk.Tk):
             child.destroy()
         self._window_labels = []
         self._last_log_text = ""
+        self._users_signature = None
+        self._log_file_signature = None
         self._build_ui()
         if self._querying_counts:
             self.refresh_button.configure(
@@ -883,7 +888,7 @@ class Dashboard(tk.Tk):
         except Exception as exc:
             self._set_notice(self.tr("read_state_failed", error=exc), "error")
         finally:
-            self._schedule_refresh(2000)
+            self._schedule_refresh(3000)
 
     def _schedule_refresh(self, delay_ms: int) -> None:
         if self.closed or self._refresh_after_id is not None:
@@ -924,11 +929,32 @@ class Dashboard(tk.Tk):
 
     def _render_users(self, users: list[Any], state: dict[str, Any]) -> None:
         selected = self._selected_student_id()
-        self.tree.delete(*self.tree.get_children())
-        self.member_count.configure(text=self.tr("member_count", count=len(users)))
-
         today_states = self._today_states(state)
         counts = state.get("counts", {})
+        signature = json.dumps(
+            {
+                "users": [user.to_dict() for user in users],
+                "states": today_states,
+                "counts": counts,
+                "language": self.language,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        self.member_count.configure(text=self.tr("member_count", count=len(users)))
+        if signature == self._users_signature:
+            selected_user = users_by_id(users).get(selected or "")
+            self.delete_button.configure(
+                state="normal" if selected_user is not None else "disabled"
+            )
+            self.edit_button.configure(
+                state="normal" if selected_user is not None else "disabled"
+            )
+            self._render_selected_detail(selected_user, state)
+            return
+        self._users_signature = signature
+        self.tree.delete(*self.tree.get_children())
         for user in users:
             user_state = today_states.get(user.student_id, {})
             count_info = counts.get(user.student_id, {})
@@ -1179,6 +1205,14 @@ class Dashboard(tk.Tk):
     def _refresh_log(self) -> None:
         today = datetime.now(BEIJING_TZ).date().isoformat()
         path = self.store.logs_dir / f"{today}.log"
+        try:
+            stat = path.stat()
+            file_signature = (str(path), stat.st_mtime_ns, stat.st_size)
+        except FileNotFoundError:
+            file_signature = (str(path), None, None)
+        if file_signature == self._log_file_signature:
+            return
+        self._log_file_signature = file_signature
         text = _tail_text(path, max_lines=160)
         if not text:
             text = self.tr("log_empty")

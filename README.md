@@ -19,6 +19,7 @@ A Windows desktop console for managing BUAA TD check-in schedules from one place
 - Optional check-in photos with a valid built-in JPEG fallback.
 - Add, edit, import, and remove roster members from the UI.
 - Independent detached background service with start/stop controls.
+- Native Windows process checks and incremental UI refresh keep the console responsive without flashing console windows.
 - Completes up to three daily rounds with configurable intervals after the first suitable window begins.
 - Automatic retry for transient network failures.
 - Preflight health check for roster, photos, machines, and TD connectivity.

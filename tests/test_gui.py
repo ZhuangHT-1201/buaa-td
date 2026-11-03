@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from buaatd.gui import Dashboard, MemberDialog
 from buaatd.photo import DEFAULT_IMAGE_NAME, ensure_photos
@@ -95,6 +96,19 @@ class MemberDialogTests(unittest.TestCase):
         shahe_exits = set(range(11, 14))
         self.assertIn(user.entrance_machine_id, shahe_entrances)
         self.assertIn(user.exit_machine_id, shahe_exits)
+
+    def test_unchanged_refresh_does_not_rebuild_member_table(self):
+        self.app.refresh()
+        self.app.update()
+        if self.app._refresh_after_id is not None:
+            self.app.after_cancel(self.app._refresh_after_id)
+            self.app._refresh_after_id = None
+        with patch.object(
+            self.app.tree,
+            "delete",
+            side_effect=AssertionError("tree should stay unchanged"),
+        ):
+            self.app.refresh()
 
 
 if __name__ == "__main__":

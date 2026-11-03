@@ -1,15 +1,40 @@
+import ctypes
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
-from csv import reader as csv_reader
+from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from .store import Store
+
+_WINDOWS_NO_WINDOW = (
+    getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0
+)
+
+if os.name == "nt":
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.OpenProcess.argtypes = [
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    ]
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    _kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _kernel32.TerminateProcess.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+else:
+    _kernel32 = None
 
 
 @dataclass(frozen=True)
@@ -40,9 +65,13 @@ def start_daemon(store: Store) -> StartResult:
     store.home.mkdir(parents=True, exist_ok=True)
     creationflags = 0
     if os.name == "nt":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        creationflags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP
+            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            | _WINDOWS_NO_WINDOW
+        )
     process = subprocess.Popen(
-        [sys.executable, "-m", "buaatd", "daemon"],
+        [_daemon_executable(), "-m", "buaatd", "daemon"],
         cwd=str(Path(__file__).resolve().parent.parent),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -53,6 +82,14 @@ def start_daemon(store: Store) -> StartResult:
     )
     write_pid(store.pid_path, process.pid)
     return StartResult(pid=process.pid, already_running=False)
+
+
+def _daemon_executable() -> str:
+    if os.name == "nt":
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        if pythonw.is_file():
+            return str(pythonw)
+    return sys.executable
 
 
 def stop_daemon(store: Store, timeout: float = 5.0) -> StopResult:
@@ -134,43 +171,49 @@ def terminate(pid: int) -> None:
 
 
 def _running_windows(pid: int) -> bool:
-    completed = subprocess.run(
-        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
+    if _kernel32 is None:
         return False
-    for raw_line in completed.stdout.splitlines():
-        line = raw_line.strip()
-        if not line.startswith('"'):
-            continue
-        row = next(csv_reader([line]), [])
-        if len(row) >= 2:
-            try:
-                if int(row[1]) == pid:
-                    return True
-            except ValueError:
-                continue
-    return False
+    process_query_limited_information = 0x1000
+    still_active = 259
+    handle = _kernel32.OpenProcess(
+        process_query_limited_information,
+        False,
+        int(pid),
+    )
+    if not handle:
+        # Access denied still means the process exists but belongs to another user.
+        return ctypes.get_last_error() == 5
+    try:
+        exit_code = wintypes.DWORD()
+        if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == still_active
+    finally:
+        _kernel32.CloseHandle(handle)
 
 
 def _terminate_windows(pid: int) -> None:
-    completed = subprocess.run(
-        ["taskkill", "/PID", str(pid), "/T", "/F"],
-        capture_output=True,
-        text=True,
-        check=False,
+    if _kernel32 is None:
+        raise RuntimeError("Windows process API unavailable")
+    process_terminate = 0x0001
+    synchronize = 0x00100000
+    handle = _kernel32.OpenProcess(
+        process_terminate | synchronize,
+        False,
+        int(pid),
     )
-    if completed.returncode == 0:
-        return
-    detail = "\n".join(part.strip() for part in (completed.stdout, completed.stderr) if part and part.strip())
-    lowered = detail.lower()
-    if any(t in lowered for t in ("not found", "no running instance", "no tasks are running")):
-        raise ProcessLookupError(pid)
-    if any(t in detail for t in ("找不到", "不存在")):
-        raise ProcessLookupError(pid)
-    if "access is denied" in lowered or any(t in detail for t in ("拒绝访问", "存取被拒")):
-        raise PermissionError(detail or f"Access denied PID={pid}")
-    raise RuntimeError(detail or f"taskkill exit={completed.returncode}")
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == 5:
+            raise PermissionError(f"Access denied PID={pid}")
+        if error in (6, 87):
+            raise ProcessLookupError(pid)
+        raise OSError(error, f"OpenProcess failed for PID={pid}")
+    try:
+        if not _kernel32.TerminateProcess(handle, 1):
+            error = ctypes.get_last_error()
+            if error == 5:
+                raise PermissionError(f"Access denied PID={pid}")
+            raise OSError(error, f"TerminateProcess failed for PID={pid}")
+    finally:
+        _kernel32.CloseHandle(handle)
