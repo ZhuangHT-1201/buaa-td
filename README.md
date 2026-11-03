@@ -37,10 +37,12 @@ A Windows desktop console for managing BUAA TD check-in schedules from one place
 ### Run
 
 1. Connect to the campus network or school VPN.
-2. Double-click `start.bat` or `一键启动.bat`.
+2. Double-click the only launcher, `一键启动.bat`.
 3. Import a roster or add members from the console.
 4. Click **Run check** to verify the local configuration and TD connectivity.
 5. Click **Start automation**. The console may be closed safely afterward.
+
+There is only one batch entry. To manage a background service that is already running, double-click `一键启动.bat` again. The existing console is restored, or a new console opens with the current service and member state.
 
 The `EN` / `中文` control at the top-right switches the complete console interface and saves the selected language.
 
@@ -92,7 +94,7 @@ Rules:
 - A member is skipped automatically after reaching 32 TD records.
 - Transient network errors retry automatically up to five times.
 - New rounds are not started when too little time remains in the current window.
-- Completion state is persisted, so restarting the console does not repeat a completed window.
+- Completion state is persisted, so restarting the console does not repeat completed rounds.
 
 ## Console Features
 

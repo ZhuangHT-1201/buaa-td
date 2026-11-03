@@ -127,7 +127,7 @@ def cmd_start(args) -> int:
     store.initialize()
     users = store.list_users()
     if not users:
-        print("没有用户，先运行 一键开始.bat 或 python -m buaatd setup")
+        print("没有用户，先运行 一键启动.bat 或 python -m buaatd setup")
         return 1
     for message in repair_user_assets(store):
         print(f"自动修复: {message}")
